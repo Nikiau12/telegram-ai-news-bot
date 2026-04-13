@@ -2,76 +2,43 @@ import asyncio
 import logging
 from pyrogram import Client, filters
 from pyrogram.handlers import MessageHandler
-from config import TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_CHAT_ID, POLL_INTERVAL_SECONDS
-from processor import process_news_item
+from config import TELEGRAM_API_ID, TELEGRAM_API_HASH, AI_BOT_INBOX_ID, POLL_INTERVAL_SECONDS, TELEGRAM_SESSION_STRING
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Имя сессии для сохранения входа
-app = Client("my_account", api_id=TELEGRAM_API_ID, api_hash=TELEGRAM_API_HASH)
+# Используем сессию из строки (для деплоя) или файл (локально)
+if TELEGRAM_SESSION_STRING:
+    app = Client("my_account", api_id=TELEGRAM_API_ID, api_hash=TELEGRAM_API_HASH, session_string=TELEGRAM_SESSION_STRING)
+else:
+    app = Client("my_account", api_id=TELEGRAM_API_ID, api_hash=TELEGRAM_API_HASH)
 
-# Хранилище для последних обработанных новостей (чтобы не дублировать)
-processed_titles = set()
+async def handle_marketanalyst_news(client, message):
+    """Обработка сообщений из канала MarketAnalyst AI и пересылка в инбокс."""
+    # Мы следим за всеми сообщениями в этом чате/канале
+    text = message.text or message.caption
+    if not text:
+        return
 
-async def handle_cryptopanic_news(client, message):
-    """Обработка сообщений от CryptoPanic ботa."""
-    # Проверяем, что сообщение от нужного бота
-    if message.from_user and message.from_user.username == "CryptoPanicBot":
-        text = message.text or message.caption
-        if not text:
-            return
+    logger.info("Найдена новая новость в MarketAnalyst AI, проверяю...")
+    
+    # Защита от петли: если в сообщении уже есть наш хэштег, значит это работа AI бота
+    if "#Bitcoin" in text:
+        logger.info("Это уже обработанная новость (найден #Bitcoin), пропускаю.")
+        return
 
-        logger.info("Получено сообщение от CryptoPanicBot")
-        
-        # Разделяем на строки, обычно бот присылает список новостей
-        lines = text.split('\n')
-        for line in lines:
-            if not line.strip() or "http" not in line:
-                continue
-            
-            # Простейший парсинг: заголовок и ссылка
-            # Ожидается формат: "Title http://link"
-            if line in processed_titles:
-                continue
-                
-            logger.info(f"Обработка новости: {line[:50]}...")
-            
-            # Отправляем в ИИ
-            tweet_text = await process_news_item(line)
-            
-            if tweet_text:
-                try:
-                    # Отправляем результат в целевой чат
-                    await client.send_message(chat_id=int(TELEGRAM_CHAT_ID), text=tweet_text)
-                    logger.info("Саммари успешно отправлено!")
-                except Exception as e:
-                    logger.error(f"Ошибка при отправке в чат: {e}")
-            
-            processed_titles.add(line)
-            # Ограничиваем размер кэша
-            if len(processed_titles) > 100:
-                processed_titles.pop()
-
-async def poll_news_command():
-    """Периодическая отправка команды /news боту CryptoPanic."""
-    while True:
-        try:
-            logger.info("Отправка /news боту @CryptoPanicBot...")
-            await app.send_message("CryptoPanicBot", "/news")
-        except Exception as e:
-            logger.error(f"Ошибка при отправке команды боту: {e}")
-        
-        await asyncio.sleep(POLL_INTERVAL_SECONDS)
+    try:
+        # Пересылаем текст в инбокс нашего AI бота
+        await client.send_message(chat_id=int(AI_BOT_INBOX_ID), text=text)
+        logger.info("Raw news переслана успешно!")
+    except Exception as e:
+        logger.error(f"Ошибка при пересылке в инбокс: {e}")
 
 async def main():
     async with app:
-        logger.info("Юзербот запущен!")
-        # Добавляем хендлер для входящих сообщений
-        app.add_handler(MessageHandler(handle_cryptopanic_news, filters.chat("CryptoPanicBot")))
-        
-        # Запускаем фоновую задачу опроса
-        asyncio.create_task(poll_news_command())
+        logger.info("Юзербот-Fetcher запущен! Слежу за каналом MarketAnalystAI...")
+        # Добавляем хендлер для входящих сообщений из канала MarketAnalystAI
+        app.add_handler(MessageHandler(handle_marketanalyst_news, filters.chat("MarketAnalystAI")))
         
         # Держим клиент запущенным
         await asyncio.Event().wait()
